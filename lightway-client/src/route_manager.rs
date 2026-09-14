@@ -128,6 +128,22 @@ fn same_ip_family(ip1: &IpAddr, ip2: &IpAddr) -> bool {
     )
 }
 
+/// Whether a routing table entry is the host's default route.
+///
+/// macOS also keeps an interface-scoped default route (`RTF_IFSCOPE`) for
+/// every interface, utun included, which the kernel only uses for sockets
+/// bound to that interface. Unbound traffic never takes them.
+fn is_host_default_route(route: &Route) -> bool {
+    if route.prefix() != 0 {
+        return false;
+    }
+    #[cfg(macos)]
+    if route.if_scope() {
+        return false;
+    }
+    true
+}
+
 /// Routes that steer all IPv6 traffic into a blackhole, because the tunnel
 /// carries IPv4 only.
 ///
@@ -346,8 +362,8 @@ impl RouteManagerInner {
                 continue;
             }
 
-            // Not a default route, skip
-            if route.prefix() != 0 {
+            // Not the host's default route, skip
+            if !is_host_default_route(&route) {
                 continue;
             }
 
@@ -926,6 +942,31 @@ mod tests {
         Standard,
         Server,
         Lan,
+    }
+
+    #[test]
+    fn test_is_host_default_route() {
+        assert!(is_host_default_route(&Route::new(
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            0
+        )));
+        assert!(is_host_default_route(&Route::new(
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            0
+        )));
+        // Not a default route
+        assert!(!is_host_default_route(&Route::new(
+            IpAddr::V6(Ipv6Addr::new(0x8000, 0, 0, 0, 0, 0, 0, 0)),
+            1
+        )));
+        // macOS: the interface-scoped copy of a default route only serves
+        // sockets bound to that interface
+        #[cfg(macos)]
+        assert!(!is_host_default_route(
+            &Route::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
+                .with_if_index(1)
+                .with_if_scope(true)
+        ));
     }
 
     #[test]
